@@ -21,22 +21,26 @@ Document Intelligence Assistant is a Retrieval Augmented Generation system for q
 
 ## Architecture
 
-```mermaid
-flowchart TD
-        A[Streamlit UI] --> B[FastAPI API]
-        B --> C[Document Service]
-        B --> D[Query Service]
-        C --> E[PDF Parser]
-        C --> F[Chunker]
-        C --> G[Embedding Service]
-        G --> H[FAISS Vector Store]
-        C --> I[SQLite Metadata DB]
-        D --> G
-        D --> H
-        D --> I
-        D --> J[Prompt Builder]
-        D --> K[Ollama Client]
-        K --> L[Ollama Runtime]
+```text
+Client Layer
+    Streamlit UI
+
+Application Layer
+    FastAPI API
+    Service Layer
+
+RAG Pipeline
+    Document ingestion
+    Chunking
+    Embedding
+    Retrieval
+    Prompting
+    Generation
+
+Storage and Inference
+    SQLite metadata store
+    FAISS vector index
+    Ollama runtime
 ```
 
 ## Tech Stack
