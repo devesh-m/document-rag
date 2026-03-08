@@ -9,7 +9,7 @@
 
 Document Intelligence Assistant is a Retrieval Augmented Generation system for question answering over uploaded PDF documents. The application indexes document chunks with embeddings, retrieves relevant context with FAISS, and generates grounded answers with Ollama.
 
-## Overview
+## Features
 
 - PDF upload and indexing
 - Chunk-based retrieval
