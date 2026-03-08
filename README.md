@@ -19,30 +19,6 @@ Document Intelligence Assistant is a Retrieval Augmented Generation system for q
 - Answer generation with Ollama
 - FastAPI backend and Streamlit frontend
 
-## Architecture
-
-```text
-Client Layer
-    Streamlit UI
-
-Application Layer
-    FastAPI API
-    Service Layer
-
-RAG Pipeline
-    Document ingestion
-    Chunking
-    Embedding
-    Retrieval
-    Prompting
-    Generation
-
-Storage and Inference
-    SQLite metadata store
-    FAISS vector index
-    Ollama runtime
-```
-
 ## Tech Stack
 
 - Backend: FastAPI, SQLAlchemy, SQLite
