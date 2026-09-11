@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: doc-investigator-api
+    runtime: docker
+    dockerfilePath: Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONPATH
+        value: /app
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: EMBEDDING_MODEL
+        value: models/text-embedding-004

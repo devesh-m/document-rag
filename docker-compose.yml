@@ -1,31 +1,48 @@
 services:
-  backend:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: docs
+      POSTGRES_PASSWORD: docs
+      POSTGRES_DB: doc_investigator
+    ports:
+      - "5434:5432"
+    volumes:
+      - doc_investigator_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docs -d doc_investigator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    ports:
+      - "6333:6333"
+    volumes:
+      - doc_investigator_qdrant:/qdrant/storage
+
+  api:
     build:
       context: .
-      dockerfile: backend/Dockerfile
-    ports:
-      - "8000:8000"
+      dockerfile: Dockerfile
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
     environment:
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-    volumes:
-      - ./storage:/app/storage
-      - ./vector_store:/app/vector_store
-      - ./backend:/app/backend
-      - ./.env:/app/.env:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
+      DATABASE_URL: postgresql+psycopg://docs:docs@postgres:5432/doc_investigator
+      QDRANT_URL: http://qdrant:6333
+      PYTHONPATH: /app
     ports:
-      - "8501:8501"
-    environment:
-      STREAMLIT_API_BASE_URL: http://backend:8000
-    depends_on:
-      - backend
+      - "8002:8000"
     volumes:
-      - ./frontend:/app/frontend
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  doc_investigator_pg:
+  doc_investigator_qdrant:

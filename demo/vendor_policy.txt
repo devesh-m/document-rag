@@ -1,0 +1,16 @@
+Vendor Security Policy — Acme Cloud (internal)
+
+1. Data retention
+Customer personal data is retained for 18 months after contract end, then deleted from primary stores.
+
+2. Encryption
+Encryption at rest is required for all customer databases. AES-256 is the baseline. TLS 1.2 or newer is required in transit.
+
+3. Vendor access
+Production access by vendors is forbidden unless a numbered change ticket is approved by Security. Shared root passwords are not allowed.
+
+4. Logging
+Access to production must be logged. Logs are kept for 90 days.
+
+5. Incidents
+Customers are notified of a confirmed personal-data incident within 72 hours.
