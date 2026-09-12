@@ -11,7 +11,7 @@ from investigator.config import Settings
 from investigator.loop import ensure_event_loop
 
 
-EMBED_DIM = 768
+EMBED_DIM = 3072
 
 
 def connect_qdrant(url: str, api_key: str) -> QdrantClient:
@@ -62,23 +62,39 @@ class PassageStore:
                 model=model,
                 google_api_key=settings.gemini_api_key,
                 transport="rest",
-                output_dimensionality=EMBED_DIM,
             )
         except Exception:
             self.embeddings = GoogleGenerativeAIEmbeddings(
                 model=model,
                 google_api_key=settings.gemini_api_key,
-                output_dimensionality=EMBED_DIM,
             )
-        self._ensure_collection()
+        self._ensure_collection(EMBED_DIM)
 
-    def _ensure_collection(self) -> None:
+    def _vector_size(self) -> int | None:
+        try:
+            info = self.client.get_collection(self.settings.qdrant_collection)
+            vectors = info.config.params.vectors
+        except Exception:
+            return None
+        if hasattr(vectors, "size"):
+            return int(vectors.size)
+        if isinstance(vectors, dict):
+            first = next(iter(vectors.values()), None)
+            if first is not None and hasattr(first, "size"):
+                return int(first.size)
+        return None
+
+    def _ensure_collection(self, size: int) -> None:
+        name = self.settings.qdrant_collection
         names = [item.name for item in self.client.get_collections().collections]
-        if self.settings.qdrant_collection in names:
-            return
+        if name in names:
+            existing = self._vector_size()
+            if existing == size:
+                return
+            self.client.delete_collection(collection_name=name)
         self.client.create_collection(
-            collection_name=self.settings.qdrant_collection,
-            vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
+            collection_name=name,
+            vectors_config=VectorParams(size=size, distance=Distance.COSINE),
         )
 
     def upsert_chunks(self, *, document_id: int, filename: str, chunks: list[dict]) -> int:
@@ -88,6 +104,9 @@ class PassageStore:
             vectors = self.embeddings.embed_documents(texts)
         except Exception as exc:
             raise RuntimeError(f"Gemini embeddings failed: {exc}") from exc
+        if not vectors:
+            raise RuntimeError("Gemini returned no embeddings.")
+        self._ensure_collection(len(vectors[0]))
         points = []
         for chunk, vector in zip(chunks, vectors, strict=True):
             chunk_id = chunk["chunk_id"]
