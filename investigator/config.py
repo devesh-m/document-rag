@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="doc_passages", alias="QDRANT_COLLECTION")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-3.6-flash", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-3.5-flash", alias="GEMINI_MODEL")
     embedding_model: str = Field(default="models/gemini-embedding-001", alias="EMBEDDING_MODEL")
     agent_max_steps: int = Field(default=8, alias="AGENT_MAX_STEPS")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
@@ -54,14 +54,15 @@ class Settings(BaseSettings):
 
     @property
     def resolved_gemini_model(self) -> str:
-        name = (self.gemini_model or "").strip() or "gemini-3.6-flash"
+        name = (self.gemini_model or "").strip() or "gemini-3.5-flash"
         name = name.replace("models/", "")
         retired = {
-            "gemini-2.5-flash": "gemini-3.6-flash",
-            "gemini-2.5-flash-lite": "gemini-3.6-flash",
-            "gemini-2.0-flash": "gemini-3.6-flash",
-            "gemini-2.0-flash-001": "gemini-3.6-flash",
-            "gemini-3.5-flash-lite": "gemini-3.6-flash",
+            "gemini-2.5-flash": "gemini-3.5-flash",
+            "gemini-2.5-flash-lite": "gemini-3.5-flash",
+            "gemini-2.0-flash": "gemini-3.5-flash",
+            "gemini-2.0-flash-001": "gemini-3.5-flash",
+            "gemini-3.5-flash-lite": "gemini-3.5-flash",
+            "gemini-3.6-flash": "gemini-3.5-flash",
         }
         return retired.get(name, name)
 
