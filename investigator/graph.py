@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, TypedDict
 
+from google import genai
+from google.genai import types
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -11,9 +12,9 @@ from sqlalchemy.orm import Session
 
 from investigator.config import Settings
 from investigator.grounding import extract_json, ground_findings
+from investigator.loop import ensure_event_loop
 from investigator.tools import build_tools
 from investigator.vectorstore import PassageStore
-from investigator.loop import ensure_event_loop
 
 
 SYSTEM = """You investigate uploaded documents. You must use tools before answering.
@@ -27,6 +28,7 @@ If the library does not support a claim, omit it. Prefer 2-6 findings.
 class AgentState(TypedDict):
     brief: str
     messages: Annotated[list, add_messages]
+    contents: list
 
 
 def _evidence_pool(messages: list) -> list[str]:
@@ -37,27 +39,145 @@ def _evidence_pool(messages: list) -> list[str]:
     return pool
 
 
+def _tool_schema(tool) -> dict:
+    schema: dict[str, Any] = {"type": "object", "properties": {}}
+    args_schema = getattr(tool, "args_schema", None)
+    if args_schema is None:
+        return schema
+    raw = args_schema.model_json_schema()
+    properties = {}
+    for key, value in (raw.get("properties") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        item = {field: value[field] for field in ("type", "description", "enum", "items") if field in value}
+        item.setdefault("type", "string")
+        properties[key] = item
+    schema["properties"] = properties
+    if raw.get("required"):
+        schema["required"] = list(raw["required"])
+    return schema
+
+
+def _function_declaration(tool) -> types.FunctionDeclaration:
+    schema = _tool_schema(tool)
+    try:
+        return types.FunctionDeclaration(
+            name=tool.name,
+            description=tool.description or tool.name,
+            parameters=schema,
+        )
+    except Exception:
+        return types.FunctionDeclaration(
+            name=tool.name,
+            description=tool.description or tool.name,
+            parameters_json_schema=schema,
+        )
+
+
+def _function_args(call) -> dict:
+    raw = getattr(call, "args", None)
+    if not raw:
+        return {}
+    try:
+        return dict(raw)
+    except Exception:
+        return {}
+
+
+def _pending_tool_messages(messages: list) -> list[ToolMessage]:
+    pending: list[ToolMessage] = []
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            pending.append(message)
+            continue
+        break
+    pending.reverse()
+    return pending
+
+
+def _generate_config(tools) -> types.GenerateContentConfig:
+    declarations = [_function_declaration(tool) for tool in tools]
+    kwargs: dict[str, Any] = {
+        "system_instruction": SYSTEM,
+        "tools": [types.Tool(function_declarations=declarations)],
+        "temperature": 0.2,
+    }
+    try:
+        kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
+    except Exception:
+        pass
+    return types.GenerateContentConfig(**kwargs)
+
+
 def build_graph(settings: Settings, store: PassageStore, session: Session):
     tools = build_tools(store, session)
     model_name = settings.resolved_gemini_model
-    try:
-        model = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=settings.gemini_api_key,
-            temperature=0.2,
-            transport="rest",
-        ).bind_tools(tools)
-    except Exception:
-        model = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=settings.gemini_api_key,
-            temperature=0.2,
-        ).bind_tools(tools)
+    client = genai.Client(api_key=settings.gemini_api_key)
+    config = _generate_config(tools)
     tool_node = ToolNode(tools)
 
     def agent(state: AgentState) -> dict:
-        response = model.invoke(state["messages"])
-        return {"messages": [response]}
+        ensure_event_loop()
+        contents = list(state.get("contents") or [])
+        if not contents:
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(
+                            text=(
+                                "Investigate this brief against the document library. Use tools.\n\n"
+                                f"{state['brief']}"
+                            )
+                        )
+                    ],
+                )
+            ]
+        else:
+            pending = _pending_tool_messages(state["messages"])
+            if pending:
+                parts = [
+                    types.Part.from_function_response(
+                        name=message.name or "tool",
+                        response={"result": str(message.content)},
+                    )
+                    for message in pending
+                ]
+                contents.append(types.Content(role="user", parts=parts))
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates or not candidates[0].content:
+            raise RuntimeError("Gemini returned no content.")
+        model_content = candidates[0].content
+        contents = contents + [model_content]
+        tool_calls = []
+        text_bits: list[str] = []
+        for index, part in enumerate(model_content.parts or []):
+            call = getattr(part, "function_call", None)
+            if call and getattr(call, "name", None):
+                tool_calls.append(
+                    {
+                        "name": call.name,
+                        "args": _function_args(call),
+                        "id": getattr(call, "id", None) or f"{call.name}_{index}",
+                        "type": "tool_call",
+                    }
+                )
+                continue
+            text = getattr(part, "text", None)
+            if text and not getattr(part, "thought", False):
+                text_bits.append(text)
+        return {
+            "messages": [AIMessage(content="\n".join(text_bits), tool_calls=tool_calls)],
+            "contents": contents,
+        }
 
     def route(state: AgentState) -> str:
         last = state["messages"][-1]
@@ -91,6 +211,7 @@ def run_investigation(
     compiled = build_graph(settings, store, session)
     start = {
         "brief": brief,
+        "contents": [],
         "messages": [
             SystemMessage(content=SYSTEM),
             HumanMessage(
