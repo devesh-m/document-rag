@@ -137,6 +137,21 @@ button:disabled {
   padding: 10px 0;
 }
 
+.doc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+button.link {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  padding: 0;
+  font-weight: 600;
+}
+
 blockquote {
   margin: 8px 0 0;
   padding-left: 12px;

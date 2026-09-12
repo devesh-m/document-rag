@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from investigator.config import Settings
-from investigator.db import Document, Finding, Investigation
+from investigator.db import Document, Finding, Investigation, get_document, list_documents
 from investigator.ingest import parse_upload
 from investigator.vectorstore import PassageStore
 
@@ -64,3 +64,19 @@ def record_investigation(session: Session, brief: str, result: dict) -> Investig
             )
         )
     return row
+
+
+def remove_document(session: Session, store: PassageStore, document_id: int) -> None:
+    row = get_document(session, document_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    store.delete_document(row.id)
+    session.delete(row)
+
+
+def clear_library(session: Session, store: PassageStore) -> int:
+    rows = list_documents(session)
+    for row in rows:
+        store.delete_document(row.id)
+        session.delete(row)
+    return len(rows)

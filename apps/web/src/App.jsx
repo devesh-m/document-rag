@@ -70,6 +70,35 @@ export default function App() {
     }
   }
 
+  async function removeDoc(id) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${API}/api/documents/${id}`, { method: "DELETE" });
+      await readPayload(response, "Could not remove that document.");
+      await refreshDocs();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearLibrary() {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${API}/api/documents`, { method: "DELETE" });
+      await readPayload(response, "Could not clear the library.");
+      setFileName("");
+      await refreshDocs();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function upload(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -136,15 +165,27 @@ export default function App() {
             <button className="secondary" type="button" onClick={seedPolicy} disabled={busy}>
               Seed sample
             </button>
+            {documents.length > 0 ? (
+              <button className="secondary" type="button" onClick={clearLibrary} disabled={busy}>
+                Clear library
+              </button>
+            ) : null}
           </div>
           {documents.length === 0 ? (
             <p className="muted">No documents yet. Seed or upload a policy.</p>
           ) : (
             documents.map((doc) => (
               <div className="doc" key={doc.id}>
-                {doc.filename}
-                <div className="muted">
-                  {doc.chunk_count} passages · {doc.page_count} pages
+                <div className="doc-row">
+                  <div>
+                    {doc.filename}
+                    <div className="muted">
+                      {doc.chunk_count} passages · {doc.page_count} pages
+                    </div>
+                  </div>
+                  <button className="link" type="button" onClick={() => removeDoc(doc.id)} disabled={busy}>
+                    Remove
+                  </button>
                 </div>
               </div>
             ))

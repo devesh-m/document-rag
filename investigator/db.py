@@ -66,3 +66,9 @@ def list_documents(session: Session) -> list[Document]:
 
 def get_document(session: Session, document_id: int) -> Document | None:
     return session.get(Document, document_id)
+
+
+def get_document_by_filename(session: Session, filename: str) -> Document | None:
+    return session.scalars(
+        select(Document).where(Document.filename == filename).order_by(Document.created_at.asc())
+    ).first()

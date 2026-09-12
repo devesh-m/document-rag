@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, PointStruct, VectorParams
+from qdrant_client.http.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
 from investigator.config import Settings
 from investigator.loop import ensure_event_loop
@@ -167,3 +167,18 @@ class PassageStore:
             "page": payload.get("page"),
             "text": payload.get("text", ""),
         }
+
+    def delete_document(self, document_id: int) -> None:
+        selector = Filter(
+            must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
+        )
+        try:
+            self.client.delete(
+                collection_name=self.settings.qdrant_collection,
+                points_selector=selector,
+            )
+        except TypeError:
+            self.client.delete(
+                collection_name=self.settings.qdrant_collection,
+                points_selector={"filter": selector},
+            )

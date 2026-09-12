@@ -10,9 +10,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from investigator.config import Settings, get_settings
-from investigator.db import get_session, init_db, list_documents
+from investigator.db import get_document_by_filename, get_session, init_db, list_documents
 from investigator.graph import run_investigation
-from investigator.services import ingest_file, record_investigation, serialize_document
+from investigator.services import (
+    clear_library,
+    ingest_file,
+    record_investigation,
+    remove_document,
+    serialize_document,
+)
 from investigator.vectorstore import PassageStore
 
 
@@ -145,9 +151,37 @@ def seed_sample(
     path = config.demo_policy_path
     if not path.exists():
         raise HTTPException(status_code=404, detail="Sample policy is missing.")
+    existing = get_document_by_filename(session, path.name)
+    if existing:
+        return serialize_document(existing)
     row = index_file(session, config, filename=path.name, data=path.read_bytes())
     session.flush()
     return serialize_document(row)
+
+
+@app.delete("/api/documents/{document_id}")
+def delete_document(
+    document_id: int,
+    session: Session = Depends(db_session),
+) -> dict:
+    try:
+        remove_document(session, get_store(), document_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session.flush()
+    return {"ok": True}
+
+
+@app.delete("/api/documents")
+def delete_all_documents(session: Session = Depends(db_session)) -> dict:
+    try:
+        removed = clear_library(session, get_store())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session.flush()
+    return {"ok": True, "removed": removed}
 
 
 @app.post("/api/investigate")
