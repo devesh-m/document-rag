@@ -11,19 +11,22 @@ function errorDetail(payload, fallback) {
 export default function App() {
   const [documents, setDocuments] = useState([]);
   const [brief, setBrief] = useState("");
+  const [fileName, setFileName] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function refreshDocs() {
     const response = await fetch(`${API}/api/documents`);
-    if (!response.ok) return;
+    if (!response.ok) {
+      throw new Error("Could not reach the API. Check VITE_API_BASE_URL.");
+    }
     const payload = await response.json();
     setDocuments(payload.documents || []);
   }
 
   useEffect(() => {
-    refreshDocs().catch(() => {});
+    refreshDocs().catch((err) => setError(err.message));
   }, []);
 
   async function loadSample() {
@@ -55,6 +58,7 @@ export default function App() {
   async function upload(event) {
     const file = event.target.files?.[0];
     if (!file) return;
+    setFileName(file.name);
     setBusy(true);
     setError("");
     try {
@@ -96,25 +100,31 @@ export default function App() {
       <section className="hero">
         <h1>Doc Investigator</h1>
         <p className="muted">
-          Upload a policy. Paste a brief. A LangGraph agent searches Qdrant, reads passages, and
-          only keeps claims that quote the library.
+          Upload a policy. Paste a brief. The agent searches the library, reads passages, and
+          keeps only claims that quote the source.
         </p>
       </section>
+
+      {error ? <p className="error">{error}</p> : null}
 
       <div className="layout">
         <aside className="card">
           <h2>Library</h2>
-          <label className="upload">
-            Upload PDF or text
+          <label className="file-btn">
+            Choose PDF or .txt
             <input type="file" accept=".pdf,.txt" onChange={upload} disabled={busy} />
           </label>
+          {fileName ? <p className="muted">{fileName}</p> : null}
           <div className="row">
+            <a className="button secondary" href={`${API}/api/sample-file`}>
+              Download sample
+            </a>
             <button className="secondary" type="button" onClick={seedPolicy} disabled={busy}>
-              Seed sample policy
+              Seed sample
             </button>
           </div>
           {documents.length === 0 ? (
-            <p className="muted">No documents yet.</p>
+            <p className="muted">No documents yet. Seed or upload a policy.</p>
           ) : (
             documents.map((doc) => (
               <div className="doc" key={doc.id}>
@@ -143,7 +153,6 @@ export default function App() {
                 {busy ? "Investigating…" : "Run agent"}
               </button>
             </div>
-            {error ? <p className="error">{error}</p> : null}
           </section>
 
           {result ? (

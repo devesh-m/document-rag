@@ -82,7 +82,9 @@ textarea {
 }
 
 button,
-.upload {
+.button {
+  display: inline-flex;
+  align-items: center;
   border: 0;
   border-radius: 10px;
   padding: 10px 14px;
@@ -90,22 +92,43 @@ button,
   cursor: pointer;
   background: var(--accent);
   color: #0b1520;
+  text-decoration: none;
 }
 
 button.secondary,
-.upload {
+.button.secondary {
   background: #21262d;
   color: var(--text);
   border: 1px solid var(--line);
 }
 
-.upload {
-  display: inline-block;
+.file-btn {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 4px;
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.upload input {
-  display: block;
-  margin-top: 8px;
+.file-btn input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .doc,

@@ -5,6 +5,7 @@ from functools import lru_cache
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -62,6 +63,11 @@ SAMPLE_BRIEF = """Check the vendor policy for:
 """
 
 
+@app.get("/")
+def root() -> dict:
+    return {"app": "Doc Investigator", "health": "/health", "ui": "Deploy the React app on Vercel."}
+
+
 @app.get("/health")
 def health(config: Settings = Depends(get_settings)) -> dict:
     return {"status": "ok", "app": config.app_name, "env": config.app_env}
@@ -74,6 +80,18 @@ def sample() -> dict:
     if settings.demo_policy_path.exists():
         policy = settings.demo_policy_path.read_text(encoding="utf-8")
     return {"brief": SAMPLE_BRIEF.strip(), "policy": policy}
+
+
+@app.get("/api/sample-file")
+def sample_file() -> FileResponse:
+    settings = get_settings()
+    if not settings.demo_policy_path.exists():
+        raise HTTPException(status_code=404, detail="Sample policy is missing.")
+    return FileResponse(
+        settings.demo_policy_path,
+        filename="Acme-Vendor-Security-Policy.txt",
+        media_type="text/plain",
+    )
 
 
 @app.get("/api/documents")
