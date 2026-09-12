@@ -76,7 +76,7 @@ def remove_document(session: Session, store: PassageStore, document_id: int) -> 
 
 def clear_library(session: Session, store: PassageStore) -> int:
     rows = list_documents(session)
+    store.clear()
     for row in rows:
-        store.delete_document(row.id)
         session.delete(row)
     return len(rows)

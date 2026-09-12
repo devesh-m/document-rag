@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+from qdrant_client.http.models import Distance, PointStruct, VectorParams
 
 from investigator.config import Settings
 from investigator.loop import ensure_event_loop
@@ -89,13 +89,32 @@ class PassageStore:
         names = [item.name for item in self.client.get_collections().collections]
         if name in names:
             existing = self._vector_size()
-            if existing == size:
-                return
+            if existing != size:
+                self.client.delete_collection(collection_name=name)
+                names = [item.name for item in self.client.get_collections().collections]
+        if name not in names:
+            self.client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(size=size, distance=Distance.COSINE),
+            )
+        self._ensure_payload_indexes()
+
+    def _ensure_payload_indexes(self) -> None:
+        try:
+            self.client.create_payload_index(
+                collection_name=self.settings.qdrant_collection,
+                field_name="document_id",
+                field_schema="integer",
+            )
+        except Exception:
+            return
+
+    def clear(self) -> None:
+        name = self.settings.qdrant_collection
+        names = [item.name for item in self.client.get_collections().collections]
+        if name in names:
             self.client.delete_collection(collection_name=name)
-        self.client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=size, distance=Distance.COSINE),
-        )
+        self._ensure_collection(EMBED_DIM)
 
     def upsert_chunks(self, *, document_id: int, filename: str, chunks: list[dict]) -> int:
         ensure_event_loop()
@@ -169,16 +188,28 @@ class PassageStore:
         }
 
     def delete_document(self, document_id: int) -> None:
-        selector = Filter(
-            must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
-        )
-        try:
-            self.client.delete(
+        ids: list = []
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
                 collection_name=self.settings.qdrant_collection,
-                points_selector=selector,
+                limit=128,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
             )
-        except TypeError:
+            for record in records:
+                payload = record.payload or {}
+                try:
+                    stored = int(payload.get("document_id"))
+                except (TypeError, ValueError):
+                    continue
+                if stored == int(document_id):
+                    ids.append(record.id)
+            if offset is None:
+                break
+        if ids:
             self.client.delete(
                 collection_name=self.settings.qdrant_collection,
-                points_selector={"filter": selector},
+                points_selector=ids,
             )
