@@ -39,16 +39,17 @@ def _evidence_pool(messages: list) -> list[str]:
 
 def build_graph(settings: Settings, store: PassageStore, session: Session):
     tools = build_tools(store, session)
+    model_name = settings.resolved_gemini_model
     try:
         model = ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
+            model=model_name,
             google_api_key=settings.gemini_api_key,
             temperature=0.2,
             transport="rest",
         ).bind_tools(tools)
     except Exception:
         model = ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
+            model=model_name,
             google_api_key=settings.gemini_api_key,
             temperature=0.2,
         ).bind_tools(tools)

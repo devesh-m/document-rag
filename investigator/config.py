@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="doc_passages", alias="QDRANT_COLLECTION")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-3.5-flash-lite", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
     embedding_model: str = Field(default="models/gemini-embedding-001", alias="EMBEDDING_MODEL")
     agent_max_steps: int = Field(default=8, alias="AGENT_MAX_STEPS")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
@@ -51,6 +51,15 @@ class Settings(BaseSettings):
         }
         name = (self.embedding_model or "").strip()
         return retired.get(name, name) or "models/gemini-embedding-001"
+
+    @property
+    def resolved_gemini_model(self) -> str:
+        # Gemini 3 tool calls require thought signatures. This LangChain version
+        # drops them, which 400s the second agent turn.
+        name = (self.gemini_model or "").strip() or "gemini-2.5-flash"
+        if name.lower().startswith("gemini-3"):
+            return "gemini-2.5-flash"
+        return name
 
     @property
     def demo_policy_path(self) -> Path:
