@@ -18,6 +18,9 @@ from investigator.vectorstore import PassageStore
 
 @lru_cache(maxsize=1)
 def get_store() -> PassageStore:
+    from investigator.loop import ensure_event_loop
+
+    ensure_event_loop()
     return PassageStore(get_settings())
 
 

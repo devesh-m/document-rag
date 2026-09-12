@@ -13,6 +13,7 @@ from investigator.config import Settings
 from investigator.grounding import extract_json, ground_findings
 from investigator.tools import build_tools
 from investigator.vectorstore import PassageStore
+from investigator.loop import ensure_event_loop
 
 
 SYSTEM = """You investigate uploaded documents. You must use tools before answering.
@@ -38,11 +39,19 @@ def _evidence_pool(messages: list) -> list[str]:
 
 def build_graph(settings: Settings, store: PassageStore, session: Session):
     tools = build_tools(store, session)
-    model = ChatGoogleGenerativeAI(
-        model=settings.gemini_model,
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    ).bind_tools(tools)
+    try:
+        model = ChatGoogleGenerativeAI(
+            model=settings.gemini_model,
+            google_api_key=settings.gemini_api_key,
+            temperature=0.2,
+            transport="rest",
+        ).bind_tools(tools)
+    except Exception:
+        model = ChatGoogleGenerativeAI(
+            model=settings.gemini_model,
+            google_api_key=settings.gemini_api_key,
+            temperature=0.2,
+        ).bind_tools(tools)
     tool_node = ToolNode(tools)
 
     def agent(state: AgentState) -> dict:
@@ -77,6 +86,7 @@ def run_investigation(
 ) -> dict[str, Any]:
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not set.")
+    ensure_event_loop()
     compiled = build_graph(settings, store, session)
     start = {
         "brief": brief,

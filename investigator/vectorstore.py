@@ -8,6 +8,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, PointStruct, VectorParams
 
 from investigator.config import Settings
+from investigator.loop import ensure_event_loop
 
 
 EMBED_DIM = 768
@@ -52,12 +53,20 @@ class PassageStore:
     def __init__(self, settings: Settings) -> None:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not set.")
+        ensure_event_loop()
         self.settings = settings
         self.client = connect_qdrant(settings.qdrant_url, settings.qdrant_api_key)
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            model=settings.embedding_model,
-            google_api_key=settings.gemini_api_key,
-        )
+        try:
+            self.embeddings = GoogleGenerativeAIEmbeddings(
+                model=settings.embedding_model,
+                google_api_key=settings.gemini_api_key,
+                transport="rest",
+            )
+        except Exception:
+            self.embeddings = GoogleGenerativeAIEmbeddings(
+                model=settings.embedding_model,
+                google_api_key=settings.gemini_api_key,
+            )
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
@@ -70,6 +79,7 @@ class PassageStore:
         )
 
     def upsert_chunks(self, *, document_id: int, filename: str, chunks: list[dict]) -> int:
+        ensure_event_loop()
         texts = [item["text"] for item in chunks]
         try:
             vectors = self.embeddings.embed_documents(texts)
@@ -95,6 +105,7 @@ class PassageStore:
         return len(points)
 
     def search(self, query: str, limit: int | None = None) -> list[dict]:
+        ensure_event_loop()
         vector = self.embeddings.embed_query(query)
         hits = self.client.search(
             collection_name=self.settings.qdrant_collection,
