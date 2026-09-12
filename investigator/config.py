@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     qdrant_collection: str = Field(default="doc_passages", alias="QDRANT_COLLECTION")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-3.5-flash-lite", alias="GEMINI_MODEL")
-    embedding_model: str = Field(default="models/text-embedding-004", alias="EMBEDDING_MODEL")
+    embedding_model: str = Field(default="models/gemini-embedding-001", alias="EMBEDDING_MODEL")
     agent_max_steps: int = Field(default=8, alias="AGENT_MAX_STEPS")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
     chunk_size: int = Field(default=800, alias="CHUNK_SIZE")
@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def resolved_embedding_model(self) -> str:
+        retired = {
+            "text-embedding-004": "models/gemini-embedding-001",
+            "models/text-embedding-004": "models/gemini-embedding-001",
+            "embedding-001": "models/gemini-embedding-001",
+            "models/embedding-001": "models/gemini-embedding-001",
+        }
+        name = (self.embedding_model or "").strip()
+        return retired.get(name, name) or "models/gemini-embedding-001"
 
     @property
     def demo_policy_path(self) -> Path:

@@ -56,16 +56,19 @@ class PassageStore:
         ensure_event_loop()
         self.settings = settings
         self.client = connect_qdrant(settings.qdrant_url, settings.qdrant_api_key)
+        model = settings.resolved_embedding_model
         try:
             self.embeddings = GoogleGenerativeAIEmbeddings(
-                model=settings.embedding_model,
+                model=model,
                 google_api_key=settings.gemini_api_key,
                 transport="rest",
+                output_dimensionality=EMBED_DIM,
             )
         except Exception:
             self.embeddings = GoogleGenerativeAIEmbeddings(
-                model=settings.embedding_model,
+                model=model,
                 google_api_key=settings.gemini_api_key,
+                output_dimensionality=EMBED_DIM,
             )
         self._ensure_collection()
 
