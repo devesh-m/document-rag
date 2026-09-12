@@ -8,6 +8,21 @@ function errorDetail(payload, fallback) {
   return fallback;
 }
 
+async function readPayload(response, fallback) {
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      if (!response.ok) throw new Error(text.slice(0, 240) || fallback);
+      throw new Error(fallback);
+    }
+  }
+  if (!response.ok) throw new Error(errorDetail(payload, fallback));
+  return payload;
+}
+
 export default function App() {
   const [documents, setDocuments] = useState([]);
   const [brief, setBrief] = useState("");
@@ -18,10 +33,7 @@ export default function App() {
 
   async function refreshDocs() {
     const response = await fetch(`${API}/api/documents`);
-    if (!response.ok) {
-      throw new Error("Could not reach the API. Check VITE_API_BASE_URL.");
-    }
-    const payload = await response.json();
+    const payload = await readPayload(response, "Could not load the document library.");
     setDocuments(payload.documents || []);
   }
 
@@ -31,13 +43,13 @@ export default function App() {
 
   async function loadSample() {
     setError("");
-    const response = await fetch(`${API}/api/sample`);
-    if (!response.ok) {
-      setError("Could not load the sample brief.");
-      return;
+    try {
+      const response = await fetch(`${API}/api/sample`);
+      const payload = await readPayload(response, "Could not load the sample brief.");
+      setBrief(payload.brief);
+    } catch (err) {
+      setError(err.message);
     }
-    const payload = await response.json();
-    setBrief(payload.brief);
   }
 
   async function seedPolicy() {
@@ -45,11 +57,14 @@ export default function App() {
     setError("");
     try {
       const response = await fetch(`${API}/api/seed`, { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(errorDetail(payload, "Seed failed"));
+      await readPayload(response, "Seed failed");
       await refreshDocs();
     } catch (err) {
-      setError(err.message);
+      setError(
+        err.message === "Failed to fetch"
+          ? "Could not add the sample policy. Wait a few seconds and try Seed sample again."
+          : err.message,
+      );
     } finally {
       setBusy(false);
     }
@@ -58,18 +73,18 @@ export default function App() {
   async function upload(event) {
     const file = event.target.files?.[0];
     if (!file) return;
-    setFileName(file.name);
     setBusy(true);
     setError("");
     try {
       const body = new FormData();
       body.append("file", file);
       const response = await fetch(`${API}/api/documents`, { method: "POST", body });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(errorDetail(payload, "Upload failed"));
+      await readPayload(response, "Upload failed");
+      setFileName(file.name);
       await refreshDocs();
     } catch (err) {
-      setError(err.message);
+      setFileName("");
+      setError(err.message === "Failed to fetch" ? "Upload failed. The API could not index that file." : err.message);
     } finally {
       setBusy(false);
       event.target.value = "";
@@ -85,8 +100,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brief }),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(errorDetail(payload, "Investigate failed"));
+      const payload = await readPayload(response, "Investigate failed");
       setResult(payload);
     } catch (err) {
       setError(err.message);
@@ -114,7 +128,7 @@ export default function App() {
             Choose PDF or .txt
             <input type="file" accept=".pdf,.txt" onChange={upload} disabled={busy} />
           </label>
-          {fileName ? <p className="muted">{fileName}</p> : null}
+          {fileName ? <p className="muted">Uploaded {fileName}</p> : null}
           <div className="row">
             <a className="button secondary" href={`${API}/api/sample-file`}>
               Download sample
@@ -149,7 +163,11 @@ export default function App() {
               <button className="secondary" type="button" onClick={loadSample} disabled={busy}>
                 Load sample brief
               </button>
-              <button type="button" onClick={investigate} disabled={busy || brief.trim().length < 12}>
+              <button
+                type="button"
+                onClick={investigate}
+                disabled={busy || brief.trim().length < 12 || documents.length === 0}
+              >
                 {busy ? "Investigating…" : "Run agent"}
               </button>
             </div>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlparse
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from qdrant_client import QdrantClient
@@ -12,15 +13,47 @@ from investigator.config import Settings
 EMBED_DIM = 768
 
 
+def connect_qdrant(url: str, api_key: str) -> QdrantClient:
+    raw = (url or "").strip()
+    if not raw:
+        raise RuntimeError("QDRANT_URL is not set.")
+    if "://" not in raw:
+        raw = ("https://" if api_key else "http://") + raw
+    parsed = urlparse(raw)
+    host = parsed.hostname
+    if not host:
+        raise RuntimeError("QDRANT_URL is not a valid host.")
+    https = parsed.scheme == "https" or bool(api_key)
+    port = parsed.port or (443 if https else 6333)
+    try:
+        client = QdrantClient(
+            host=host,
+            port=port,
+            https=https,
+            api_key=api_key or None,
+            timeout=30,
+            prefer_grpc=False,
+            check_compatibility=False,
+        )
+        client.get_collections()
+        return client
+    except TypeError:
+        try:
+            client = QdrantClient(url=raw, api_key=api_key or None, timeout=30)
+            client.get_collections()
+            return client
+        except Exception as exc:
+            raise RuntimeError(f"Could not reach Qdrant ({host}): {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Could not reach Qdrant ({host}:{port}): {exc}") from exc
+
+
 class PassageStore:
     def __init__(self, settings: Settings) -> None:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not set.")
         self.settings = settings
-        self.client = QdrantClient(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key or None,
-        )
+        self.client = connect_qdrant(settings.qdrant_url, settings.qdrant_api_key)
         self.embeddings = GoogleGenerativeAIEmbeddings(
             model=settings.embedding_model,
             google_api_key=settings.gemini_api_key,
@@ -38,7 +71,10 @@ class PassageStore:
 
     def upsert_chunks(self, *, document_id: int, filename: str, chunks: list[dict]) -> int:
         texts = [item["text"] for item in chunks]
-        vectors = self.embeddings.embed_documents(texts)
+        try:
+            vectors = self.embeddings.embed_documents(texts)
+        except Exception as exc:
+            raise RuntimeError(f"Gemini embeddings failed: {exc}") from exc
         points = []
         for chunk, vector in zip(chunks, vectors, strict=True):
             chunk_id = chunk["chunk_id"]

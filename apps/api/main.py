@@ -3,9 +3,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -50,6 +50,26 @@ def db_session() -> Session:
         raise
     finally:
         session.close()
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(_: Request, exc: Exception) -> JSONResponse:
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc) or exc.__class__.__name__},
+    )
+
+
+def index_file(session: Session, config: Settings, *, filename: str, data: bytes):
+    try:
+        store = get_store()
+        return ingest_file(session, store, config, filename=filename, data=data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Could not index the document: {exc}") from exc
 
 
 class InvestigateIn(BaseModel):
@@ -109,11 +129,7 @@ async def upload_document(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
-    try:
-        store = get_store()
-        row = ingest_file(session, store, config, filename=filename, data=data)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    row = index_file(session, config, filename=filename, data=data)
     session.flush()
     return serialize_document(row)
 
@@ -126,14 +142,7 @@ def seed_sample(
     path = config.demo_policy_path
     if not path.exists():
         raise HTTPException(status_code=404, detail="Sample policy is missing.")
-    store = get_store()
-    row = ingest_file(
-        session,
-        store,
-        config,
-        filename=path.name,
-        data=path.read_bytes(),
-    )
+    row = index_file(session, config, filename=path.name, data=path.read_bytes())
     session.flush()
     return serialize_document(row)
 
@@ -149,8 +158,10 @@ def investigate(
     try:
         store = get_store()
         result = run_investigation(config, store, session, payload.brief.strip())
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Investigation failed: {exc}") from exc
     row = record_investigation(session, payload.brief.strip(), result)
     session.flush()
     return {
