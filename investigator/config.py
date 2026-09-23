@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     qdrant_collection: str = Field(default="doc_passages", alias="QDRANT_COLLECTION")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-3.5-flash", alias="GEMINI_MODEL")
+    openrouter_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL"
+    )
+    openrouter_model: str = Field(default="openrouter/free", alias="OPENROUTER_MODEL")
     embedding_model: str = Field(default="models/gemini-embedding-001", alias="EMBEDDING_MODEL")
     agent_max_steps: int = Field(default=8, alias="AGENT_MAX_STEPS")
     retrieval_top_k: int = Field(default=5, alias="RETRIEVAL_TOP_K")
@@ -51,6 +56,13 @@ class Settings(BaseSettings):
         }
         name = (self.embedding_model or "").strip()
         return retired.get(name, name) or "models/gemini-embedding-001"
+
+    @property
+    def resolved_openrouter_model(self) -> str:
+        name = (self.openrouter_model or "").strip()
+        if not name or name.startswith("gemini-") or name.startswith("models/"):
+            return "openrouter/free"
+        return name
 
     @property
     def resolved_gemini_model(self) -> str:

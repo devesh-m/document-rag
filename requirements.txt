@@ -11,4 +11,5 @@ langchain-core==0.3.72
 langgraph==0.6.6
 langchain-google-genai==2.1.8
 google-genai==2.23.0
+openai==1.68.2
 pytest==8.3.5

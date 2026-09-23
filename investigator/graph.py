@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, TypedDict
 
 from google import genai
@@ -8,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from investigator.config import Settings
@@ -20,9 +22,18 @@ from investigator.vectorstore import PassageStore
 SYSTEM = """You investigate uploaded documents. You must use tools before answering.
 Tools: list_library, search_documents, read_passage.
 Do not invent quotes. When finished, respond with JSON only:
+Do not invent quotes. Copy exact verbatim substrings from the tool output into the "quote" field.
+When finished, respond with JSON only:
 {"summary":"...","findings":[{"claim":"...","quote":"...","document":"...","chunk_id":"..."}]}
 If the library does not support a claim, omit it. Prefer 2-6 findings.
 """
+
+FALLBACK_FREE_MODELS = [
+    "openrouter/free",
+    "qwen/qwen3.8-27b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+]
 
 
 class AgentState(TypedDict):
@@ -50,6 +61,11 @@ def _tool_schema(tool) -> dict:
         if not isinstance(value, dict):
             continue
         item = {field: value[field] for field in ("type", "description", "enum", "items") if field in value}
+        item = {
+            field: value[field]
+            for field in ("type", "description", "enum", "items")
+            if field in value
+        }
         item.setdefault("type", "string")
         properties[key] = item
     schema["properties"] = properties
@@ -72,6 +88,15 @@ def _function_declaration(tool) -> types.FunctionDeclaration:
             description=tool.description or tool.name,
             parameters_json_schema=schema,
         )
+def _openai_tool(tool) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description or tool.name,
+            "parameters": _tool_schema(tool),
+        },
+    }
 
 
 def _function_args(call) -> dict:
@@ -82,6 +107,56 @@ def _function_args(call) -> dict:
         return dict(raw)
     except Exception:
         return {}
+def _to_openai_messages(messages: list) -> list[dict[str, Any]]:
+    formatted: list[dict[str, Any]] = []
+    for message in messages:
+        if isinstance(message, SystemMessage):
+            formatted.append({"role": "system", "content": str(message.content)})
+        elif isinstance(message, HumanMessage):
+            formatted.append({"role": "user", "content": str(message.content)})
+        elif isinstance(message, AIMessage):
+            if message.tool_calls:
+                calls = []
+                for idx, call in enumerate(message.tool_calls):
+                    name = call["name"] if isinstance(call, dict) else call.name
+                    args = (
+                        call.get("args", {})
+                        if isinstance(call, dict)
+                        else getattr(call, "args", {})
+                    )
+                    call_id = (
+                        (call.get("id") if isinstance(call, dict) else getattr(call, "id", None))
+                        or f"call_{name}_{idx}"
+                    )
+                    calls.append(
+                        {
+                            "id": str(call_id),
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(args or {}),
+                            },
+                        }
+                    )
+                formatted.append(
+                    {
+                        "role": "assistant",
+                        "content": str(message.content) if message.content else None,
+                        "tool_calls": calls,
+                    }
+                )
+            else:
+                formatted.append({"role": "assistant", "content": str(message.content)})
+        elif isinstance(message, ToolMessage):
+            formatted.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(getattr(message, "tool_call_id", "") or "call_0"),
+                    "name": message.name or "tool",
+                    "content": str(message.content),
+                }
+            )
+    return formatted
 
 
 def _pending_tool_messages(messages: list) -> list[ToolMessage]:
@@ -93,6 +168,18 @@ def _pending_tool_messages(messages: list) -> list[ToolMessage]:
         break
     pending.reverse()
     return pending
+def _parse_tool_args(raw_args: Any) -> dict[str, Any]:
+    if not raw_args:
+        return {}
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 def _generate_config(tools) -> types.GenerateContentConfig:
@@ -114,7 +201,18 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
     model_name = settings.resolved_gemini_model
     client = genai.Client(api_key=settings.gemini_api_key)
     config = _generate_config(tools)
+    openai_tools = [_openai_tool(tool) for tool in tools]
     tool_node = ToolNode(tools)
+
+    api_key = settings.openrouter_api_key.strip()
+    client = OpenAI(
+        base_url=settings.openrouter_base_url.strip() or "https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+    primary_model = settings.resolved_openrouter_model
+    candidate_models = [primary_model] + [
+        m for m in FALLBACK_FREE_MODELS if m != primary_model
+    ]
 
     def agent(state: AgentState) -> dict:
         ensure_event_loop()
@@ -131,6 +229,21 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
                             )
                         )
                     ],
+        openai_messages = _to_openai_messages(state["messages"])
+        has_tool_history = any(isinstance(m, ToolMessage) for m in state["messages"])
+
+        last_err: Exception | None = None
+        response = None
+        for idx, model_name in enumerate(candidate_models):
+            fallback_slice = candidate_models[idx : idx + 3]
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=openai_messages,
+                    tools=openai_tools,
+                    tool_choice="auto",
+                    temperature=0.2,
+                    extra_body={"models": fallback_slice},
                 )
             ]
         else:
@@ -157,6 +270,19 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
             raise RuntimeError("Gemini returned no content.")
         model_content = candidates[0].content
         contents = contents + [model_content]
+                if response and getattr(response, "choices", None):
+                    break
+            except Exception as exc:
+                last_err = exc
+                continue
+
+        if response is None or not getattr(response, "choices", None):
+            raise RuntimeError(f"OpenRouter request failed: {last_err or 'No choices returned.'}")
+
+        msg = response.choices[0].message
+        content_text = (getattr(msg, "content", None) or "").strip()
+        raw_tool_calls = getattr(msg, "tool_calls", None) or []
+
         tool_calls = []
         text_bits: list[str] = []
         for index, part in enumerate(model_content.parts or []):
@@ -170,13 +296,45 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
                         "type": "tool_call",
                     }
                 )
+        for index, call in enumerate(raw_tool_calls):
+            fn = getattr(call, "function", None)
+            fn_name = getattr(fn, "name", None) if fn else None
+            if not fn_name:
                 continue
             text = getattr(part, "text", None)
             if text and not getattr(part, "thought", False):
                 text_bits.append(text)
+            tool_calls.append(
+                {
+                    "name": fn_name,
+                    "args": _parse_tool_args(getattr(fn, "arguments", None)),
+                    "id": getattr(call, "id", None) or f"{fn_name}_{index}",
+                    "type": "tool_call",
+                }
+            )
+
+        # If a free model skipped calling tools on the very first turn, trigger
+        # search_documents + list_library automatically so Qdrant passages are retrieved.
+        if not tool_calls and not has_tool_history:
+            tool_calls = [
+                {
+                    "name": "list_library",
+                    "args": {},
+                    "id": "auto_list_library_0",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "search_documents",
+                    "args": {"query": state["brief"]},
+                    "id": "auto_search_documents_1",
+                    "type": "tool_call",
+                },
+            ]
+
         return {
             "messages": [AIMessage(content="\n".join(text_bits), tool_calls=tool_calls)],
             "contents": contents,
+            "messages": [AIMessage(content=content_text, tool_calls=tool_calls)],
         }
 
     def route(state: AgentState) -> str:
@@ -207,6 +365,8 @@ def run_investigation(
 ) -> dict[str, Any]:
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not set.")
+    if not settings.openrouter_api_key.strip():
+        raise RuntimeError("OPENROUTER_API_KEY is not set.")
     ensure_event_loop()
     compiled = build_graph(settings, store, session)
     start = {
@@ -230,6 +390,11 @@ def run_investigation(
             for call in message.tool_calls:
                 name = call["name"] if isinstance(call, dict) else call.name
                 args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {})
+                args = (
+                    call.get("args", {})
+                    if isinstance(call, dict)
+                    else getattr(call, "args", {})
+                )
                 trace.append(f"{name}({args})")
         if isinstance(message, ToolMessage):
             preview = str(message.content).replace("\n", " ")[:180]
