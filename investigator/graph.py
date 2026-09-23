@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, TypedDict
 
-from google import genai
-from google.genai import types
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -21,7 +19,6 @@ from investigator.vectorstore import PassageStore
 
 SYSTEM = """You investigate uploaded documents. You must use tools before answering.
 Tools: list_library, search_documents, read_passage.
-Do not invent quotes. When finished, respond with JSON only:
 Do not invent quotes. Copy exact verbatim substrings from the tool output into the "quote" field.
 When finished, respond with JSON only:
 {"summary":"...","findings":[{"claim":"...","quote":"...","document":"...","chunk_id":"..."}]}
@@ -39,7 +36,6 @@ FALLBACK_FREE_MODELS = [
 class AgentState(TypedDict):
     brief: str
     messages: Annotated[list, add_messages]
-    contents: list
 
 
 def _evidence_pool(messages: list) -> list[str]:
@@ -60,7 +56,6 @@ def _tool_schema(tool) -> dict:
     for key, value in (raw.get("properties") or {}).items():
         if not isinstance(value, dict):
             continue
-        item = {field: value[field] for field in ("type", "description", "enum", "items") if field in value}
         item = {
             field: value[field]
             for field in ("type", "description", "enum", "items")
@@ -74,20 +69,6 @@ def _tool_schema(tool) -> dict:
     return schema
 
 
-def _function_declaration(tool) -> types.FunctionDeclaration:
-    schema = _tool_schema(tool)
-    try:
-        return types.FunctionDeclaration(
-            name=tool.name,
-            description=tool.description or tool.name,
-            parameters=schema,
-        )
-    except Exception:
-        return types.FunctionDeclaration(
-            name=tool.name,
-            description=tool.description or tool.name,
-            parameters_json_schema=schema,
-        )
 def _openai_tool(tool) -> dict[str, Any]:
     return {
         "type": "function",
@@ -99,14 +80,6 @@ def _openai_tool(tool) -> dict[str, Any]:
     }
 
 
-def _function_args(call) -> dict:
-    raw = getattr(call, "args", None)
-    if not raw:
-        return {}
-    try:
-        return dict(raw)
-    except Exception:
-        return {}
 def _to_openai_messages(messages: list) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for message in messages:
@@ -159,15 +132,6 @@ def _to_openai_messages(messages: list) -> list[dict[str, Any]]:
     return formatted
 
 
-def _pending_tool_messages(messages: list) -> list[ToolMessage]:
-    pending: list[ToolMessage] = []
-    for message in reversed(messages):
-        if isinstance(message, ToolMessage):
-            pending.append(message)
-            continue
-        break
-    pending.reverse()
-    return pending
 def _parse_tool_args(raw_args: Any) -> dict[str, Any]:
     if not raw_args:
         return {}
@@ -182,25 +146,8 @@ def _parse_tool_args(raw_args: Any) -> dict[str, Any]:
     return {}
 
 
-def _generate_config(tools) -> types.GenerateContentConfig:
-    declarations = [_function_declaration(tool) for tool in tools]
-    kwargs: dict[str, Any] = {
-        "system_instruction": SYSTEM,
-        "tools": [types.Tool(function_declarations=declarations)],
-        "temperature": 0.2,
-    }
-    try:
-        kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
-    except Exception:
-        pass
-    return types.GenerateContentConfig(**kwargs)
-
-
 def build_graph(settings: Settings, store: PassageStore, session: Session):
     tools = build_tools(store, session)
-    model_name = settings.resolved_gemini_model
-    client = genai.Client(api_key=settings.gemini_api_key)
-    config = _generate_config(tools)
     openai_tools = [_openai_tool(tool) for tool in tools]
     tool_node = ToolNode(tools)
 
@@ -216,19 +163,6 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
 
     def agent(state: AgentState) -> dict:
         ensure_event_loop()
-        contents = list(state.get("contents") or [])
-        if not contents:
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(
-                            text=(
-                                "Investigate this brief against the document library. Use tools.\n\n"
-                                f"{state['brief']}"
-                            )
-                        )
-                    ],
         openai_messages = _to_openai_messages(state["messages"])
         has_tool_history = any(isinstance(m, ToolMessage) for m in state["messages"])
 
@@ -245,31 +179,6 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
                     temperature=0.2,
                     extra_body={"models": fallback_slice},
                 )
-            ]
-        else:
-            pending = _pending_tool_messages(state["messages"])
-            if pending:
-                parts = [
-                    types.Part.from_function_response(
-                        name=message.name or "tool",
-                        response={"result": str(message.content)},
-                    )
-                    for message in pending
-                ]
-                contents.append(types.Content(role="user", parts=parts))
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            raise RuntimeError(str(exc)) from exc
-        candidates = getattr(response, "candidates", None) or []
-        if not candidates or not candidates[0].content:
-            raise RuntimeError("Gemini returned no content.")
-        model_content = candidates[0].content
-        contents = contents + [model_content]
                 if response and getattr(response, "choices", None):
                     break
             except Exception as exc:
@@ -284,26 +193,11 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
         raw_tool_calls = getattr(msg, "tool_calls", None) or []
 
         tool_calls = []
-        text_bits: list[str] = []
-        for index, part in enumerate(model_content.parts or []):
-            call = getattr(part, "function_call", None)
-            if call and getattr(call, "name", None):
-                tool_calls.append(
-                    {
-                        "name": call.name,
-                        "args": _function_args(call),
-                        "id": getattr(call, "id", None) or f"{call.name}_{index}",
-                        "type": "tool_call",
-                    }
-                )
         for index, call in enumerate(raw_tool_calls):
             fn = getattr(call, "function", None)
             fn_name = getattr(fn, "name", None) if fn else None
             if not fn_name:
                 continue
-            text = getattr(part, "text", None)
-            if text and not getattr(part, "thought", False):
-                text_bits.append(text)
             tool_calls.append(
                 {
                     "name": fn_name,
@@ -332,8 +226,6 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
             ]
 
         return {
-            "messages": [AIMessage(content="\n".join(text_bits), tool_calls=tool_calls)],
-            "contents": contents,
             "messages": [AIMessage(content=content_text, tool_calls=tool_calls)],
         }
 
@@ -363,15 +255,12 @@ def run_investigation(
     session: Session,
     brief: str,
 ) -> dict[str, Any]:
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set.")
     if not settings.openrouter_api_key.strip():
         raise RuntimeError("OPENROUTER_API_KEY is not set.")
     ensure_event_loop()
     compiled = build_graph(settings, store, session)
     start = {
         "brief": brief,
-        "contents": [],
         "messages": [
             SystemMessage(content=SYSTEM),
             HumanMessage(
@@ -389,7 +278,6 @@ def run_investigation(
         if isinstance(message, AIMessage) and message.tool_calls:
             for call in message.tool_calls:
                 name = call["name"] if isinstance(call, dict) else call.name
-                args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {})
                 args = (
                     call.get("args", {})
                     if isinstance(call, dict)
