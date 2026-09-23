@@ -58,8 +58,31 @@ class Settings(BaseSettings):
         return retired.get(name, name) or "models/gemini-embedding-001"
 
     @property
+    def resolved_openrouter_api_key(self) -> str:
+        import os
+
+        direct = (self.openrouter_api_key or "").strip()
+        if direct:
+            return direct
+        for k, v in os.environ.items():
+            key_clean = k.strip().upper()
+            val_clean = (v or "").strip()
+            if key_clean in ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY") and val_clean:
+                return val_clean
+            if val_clean.startswith("sk-or-"):
+                return val_clean
+        return ""
+
+    @property
     def resolved_openrouter_model(self) -> str:
+        import os
+
         name = (self.openrouter_model or "").strip()
+        if not name:
+            for k, v in os.environ.items():
+                if k.strip().upper() == "OPENROUTER_MODEL" and (v or "").strip():
+                    name = v.strip()
+                    break
         if not name or name.startswith("gemini-") or name.startswith("models/"):
             return "openrouter/free"
         return name

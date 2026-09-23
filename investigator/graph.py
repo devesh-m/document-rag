@@ -151,7 +151,7 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
     openai_tools = [_openai_tool(tool) for tool in tools]
     tool_node = ToolNode(tools)
 
-    api_key = settings.openrouter_api_key.strip()
+    api_key = settings.resolved_openrouter_api_key
     client = OpenAI(
         base_url=settings.openrouter_base_url.strip() or "https://openrouter.ai/api/v1",
         api_key=api_key,
@@ -255,8 +255,10 @@ def run_investigation(
     session: Session,
     brief: str,
 ) -> dict[str, Any]:
-    if not settings.openrouter_api_key.strip():
-        raise RuntimeError("OPENROUTER_API_KEY is not set.")
+    if not settings.resolved_openrouter_api_key:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set on Render. Click 'Save Changes' in Render -> Environment."
+        )
     ensure_event_loop()
     compiled = build_graph(settings, store, session)
     start = {
