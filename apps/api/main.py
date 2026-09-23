@@ -151,8 +151,19 @@ def seed_sample(
     path = config.demo_policy_path
     if not path.exists():
         raise HTTPException(status_code=404, detail="Sample policy is missing.")
+    store = get_store()
     existing = get_document_by_filename(session, path.name)
     if existing:
+        if store.get_chunk(f"{path.name}:1:1") is None:
+            from investigator.ingest import parse_upload
+
+            chunks = parse_upload(
+                path.name,
+                path.read_bytes(),
+                chunk_size=config.chunk_size,
+                overlap=config.chunk_overlap,
+            )
+            store.upsert_chunks(document_id=existing.id, filename=path.name, chunks=chunks)
         return serialize_document(existing)
     row = index_file(session, config, filename=path.name, data=path.read_bytes())
     session.flush()
@@ -190,10 +201,26 @@ def investigate(
     session: Session = Depends(db_session),
     config: Settings = Depends(get_settings),
 ) -> dict:
-    if not list_documents(session):
+    docs = list_documents(session)
+    if not docs:
         raise HTTPException(status_code=400, detail="Upload or seed a document first.")
     try:
         store = get_store()
+        demo_path = config.demo_policy_path
+        for doc in docs:
+            if doc.filename == demo_path.name and demo_path.exists():
+                if store.get_chunk(f"{demo_path.name}:1:1") is None:
+                    from investigator.ingest import parse_upload
+
+                    chunks = parse_upload(
+                        demo_path.name,
+                        demo_path.read_bytes(),
+                        chunk_size=config.chunk_size,
+                        overlap=config.chunk_overlap,
+                    )
+                    store.upsert_chunks(
+                        document_id=doc.id, filename=demo_path.name, chunks=chunks
+                    )
         result = run_investigation(config, store, session, payload.brief.strip())
     except HTTPException:
         raise

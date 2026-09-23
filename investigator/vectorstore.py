@@ -167,7 +167,32 @@ class PassageStore:
                     "score": float(hit.score or 0),
                 }
             )
+        if not results:
+            records, _ = self.client.scroll(
+                collection_name=self.settings.qdrant_collection,
+                limit=limit or self.settings.retrieval_top_k,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for rec in records:
+                payload = rec.payload or {}
+                results.append(
+                    {
+                        "chunk_id": payload.get("chunk_id", ""),
+                        "document_id": payload.get("document_id"),
+                        "filename": payload.get("filename", ""),
+                        "page": payload.get("page"),
+                        "text": payload.get("text", ""),
+                        "score": 0.5,
+                    }
+                )
         return results
+
+    def count(self) -> int:
+        try:
+            return int(self.client.count(collection_name=self.settings.qdrant_collection).count)
+        except Exception:
+            return 0
 
     def get_chunk(self, chunk_id: str) -> dict | None:
         point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
