@@ -203,36 +203,19 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
 
     def agent(state: AgentState) -> dict:
         ensure_event_loop()
-        openai_messages = _to_openai_messages(state["messages"])
-        has_tool_history = any(isinstance(m, ToolMessage) for m in state["messages"])
         tool_rounds = _count_tool_rounds(state["messages"])
         evidence = _evidence_pool(state["messages"])
         allow_tools = tool_rounds < MAX_TOOL_ROUNDS
 
-        last_err: Exception | None = None
-        response = None
-        for idx, model_name in enumerate(candidate_models):
-            fallback_slice = candidate_models[idx : idx + 3]
         if allow_tools:
             openai_messages = _to_openai_messages(state["messages"])
             try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=openai_messages,
                 response = _call_openrouter(
                     client,
                     candidate_models,
                     openai_messages,
                     tools=openai_tools,
-                    tool_choice="auto",
-                    temperature=0.2,
-                    extra_body={"models": fallback_slice},
                 )
-                if response and getattr(response, "choices", None):
-                    break
-            except Exception as exc:
-                last_err = exc
-                continue
                 msg = response.choices[0].message
                 content_text = (getattr(msg, "content", None) or "").strip()
                 raw_tool_calls = getattr(msg, "tool_calls", None) or []
@@ -240,8 +223,6 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
                 content_text = ""
                 raw_tool_calls = []
 
-        if response is None or not getattr(response, "choices", None):
-            raise RuntimeError(f"OpenRouter request failed: {last_err or 'No choices returned.'}")
             tool_calls = []
             for index, call in enumerate(raw_tool_calls):
                 fn = getattr(call, "function", None)
@@ -257,10 +238,6 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
                     }
                 )
 
-        msg = response.choices[0].message
-        content_text = (getattr(msg, "content", None) or "").strip()
-        raw_tool_calls = getattr(msg, "tool_calls", None) or []
-            # On the very first turn, ensure Qdrant passages are searched
             if tool_rounds == 0:
                 called_names = {c["name"] for c in tool_calls}
                 if "list_library" not in called_names:
@@ -283,47 +260,15 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
                         }
                     )
 
-        tool_calls = []
-        for index, call in enumerate(raw_tool_calls):
-            fn = getattr(call, "function", None)
-            fn_name = getattr(fn, "name", None) if fn else None
-            if not fn_name:
-                continue
-            tool_calls.append(
-                {
-                    "name": fn_name,
-                    "args": _parse_tool_args(getattr(fn, "arguments", None)),
-                    "id": getattr(call, "id", None) or f"{fn_name}_{index}",
-                    "type": "tool_call",
             if tool_calls:
                 return {
                     "messages": [AIMessage(content=content_text, tool_calls=tool_calls)],
                 }
-            )
             if content_text and "{" in content_text and evidence:
                 return {
                     "messages": [AIMessage(content=content_text, tool_calls=[])],
                 }
 
-        # If a free model skipped calling tools on the very first turn, trigger
-        # search_documents + list_library automatically so Qdrant passages are retrieved.
-        if not tool_calls and not has_tool_history:
-            tool_calls = [
-                {
-                    "name": "list_library",
-                    "args": {},
-                    "id": "auto_list_library_0",
-                    "type": "tool_call",
-                },
-                {
-                    "name": "search_documents",
-                    "args": {"query": state["brief"]},
-                    "id": "auto_search_documents_1",
-                    "type": "tool_call",
-                },
-            ]
-
-        # Final synthesis turn (no tools passed, guaranteed termination -> finalize)
         evidence_blob = "\n\n".join(evidence)
         synthesis_messages = [
             {"role": "system", "content": SYSTEM},
@@ -345,7 +290,6 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
         )
         final_text = (getattr(response.choices[0].message, "content", None) or "").strip()
         return {
-            "messages": [AIMessage(content=content_text, tool_calls=tool_calls)],
             "messages": [AIMessage(content=final_text, tool_calls=[])],
         }
 
