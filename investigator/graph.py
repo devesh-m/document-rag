@@ -32,6 +32,8 @@ FALLBACK_FREE_MODELS = [
     "nvidia/nemotron-3.5-lightning:free",
 ]
 
+MAX_TOOL_ROUNDS = 2
+
 
 class AgentState(TypedDict):
     brief: str
@@ -44,6 +46,14 @@ def _evidence_pool(messages: list) -> list[str]:
         if isinstance(message, ToolMessage):
             pool.append(str(message.content))
     return pool
+
+
+def _count_tool_rounds(messages: list) -> int:
+    return sum(
+        1
+        for message in messages
+        if isinstance(message, AIMessage) and bool(message.tool_calls)
+    )
 
 
 def _tool_schema(tool) -> dict:
@@ -146,6 +156,34 @@ def _parse_tool_args(raw_args: Any) -> dict[str, Any]:
     return {}
 
 
+def _call_openrouter(
+    client: OpenAI,
+    candidate_models: list[str],
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+):
+    last_err: Exception | None = None
+    for idx, model_name in enumerate(candidate_models):
+        fallback_slice = candidate_models[idx : idx + 3]
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.2,
+            "extra_body": {"models": fallback_slice},
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        try:
+            response = client.chat.completions.create(**kwargs)
+            if response and getattr(response, "choices", None):
+                return response
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(f"OpenRouter request failed: {last_err or 'No choices returned.'}")
+
+
 def build_graph(settings: Settings, store: PassageStore, session: Session):
     tools = build_tools(store, session)
     openai_tools = [_openai_tool(tool) for tool in tools]
@@ -163,70 +201,96 @@ def build_graph(settings: Settings, store: PassageStore, session: Session):
 
     def agent(state: AgentState) -> dict:
         ensure_event_loop()
-        openai_messages = _to_openai_messages(state["messages"])
-        has_tool_history = any(isinstance(m, ToolMessage) for m in state["messages"])
+        tool_rounds = _count_tool_rounds(state["messages"])
+        evidence = _evidence_pool(state["messages"])
+        allow_tools = tool_rounds < MAX_TOOL_ROUNDS
 
-        last_err: Exception | None = None
-        response = None
-        for idx, model_name in enumerate(candidate_models):
-            fallback_slice = candidate_models[idx : idx + 3]
+        if allow_tools:
+            openai_messages = _to_openai_messages(state["messages"])
             try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=openai_messages,
+                response = _call_openrouter(
+                    client,
+                    candidate_models,
+                    openai_messages,
                     tools=openai_tools,
-                    tool_choice="auto",
-                    temperature=0.2,
-                    extra_body={"models": fallback_slice},
                 )
-                if response and getattr(response, "choices", None):
-                    break
-            except Exception as exc:
-                last_err = exc
-                continue
+                msg = response.choices[0].message
+                content_text = (getattr(msg, "content", None) or "").strip()
+                raw_tool_calls = getattr(msg, "tool_calls", None) or []
+            except Exception:
+                content_text = ""
+                raw_tool_calls = []
 
-        if response is None or not getattr(response, "choices", None):
-            raise RuntimeError(f"OpenRouter request failed: {last_err or 'No choices returned.'}")
+            tool_calls = []
+            for index, call in enumerate(raw_tool_calls):
+                fn = getattr(call, "function", None)
+                fn_name = getattr(fn, "name", None) if fn else None
+                if not fn_name:
+                    continue
+                tool_calls.append(
+                    {
+                        "name": fn_name,
+                        "args": _parse_tool_args(getattr(fn, "arguments", None)),
+                        "id": getattr(call, "id", None) or f"{fn_name}_{index}",
+                        "type": "tool_call",
+                    }
+                )
 
-        msg = response.choices[0].message
-        content_text = (getattr(msg, "content", None) or "").strip()
-        raw_tool_calls = getattr(msg, "tool_calls", None) or []
+            # On the very first turn, ensure Qdrant passages are searched
+            if tool_rounds == 0:
+                called_names = {c["name"] for c in tool_calls}
+                if "list_library" not in called_names:
+                    tool_calls.insert(
+                        0,
+                        {
+                            "name": "list_library",
+                            "args": {},
+                            "id": "auto_list_library_0",
+                            "type": "tool_call",
+                        },
+                    )
+                if "search_documents" not in called_names:
+                    tool_calls.append(
+                        {
+                            "name": "search_documents",
+                            "args": {"query": state["brief"]},
+                            "id": "auto_search_documents_1",
+                            "type": "tool_call",
+                        }
+                    )
 
-        tool_calls = []
-        for index, call in enumerate(raw_tool_calls):
-            fn = getattr(call, "function", None)
-            fn_name = getattr(fn, "name", None) if fn else None
-            if not fn_name:
-                continue
-            tool_calls.append(
-                {
-                    "name": fn_name,
-                    "args": _parse_tool_args(getattr(fn, "arguments", None)),
-                    "id": getattr(call, "id", None) or f"{fn_name}_{index}",
-                    "type": "tool_call",
+            if tool_calls:
+                return {
+                    "messages": [AIMessage(content=content_text, tool_calls=tool_calls)],
                 }
-            )
+            if content_text and "{" in content_text and evidence:
+                return {
+                    "messages": [AIMessage(content=content_text, tool_calls=[])],
+                }
 
-        # If a free model skipped calling tools on the very first turn, trigger
-        # search_documents + list_library automatically so Qdrant passages are retrieved.
-        if not tool_calls and not has_tool_history:
-            tool_calls = [
-                {
-                    "name": "list_library",
-                    "args": {},
-                    "id": "auto_list_library_0",
-                    "type": "tool_call",
-                },
-                {
-                    "name": "search_documents",
-                    "args": {"query": state["brief"]},
-                    "id": "auto_search_documents_1",
-                    "type": "tool_call",
-                },
-            ]
-
+        # Final synthesis turn (no tools passed, guaranteed termination -> finalize)
+        evidence_blob = "\n\n".join(evidence)
+        synthesis_messages = [
+            {"role": "system", "content": SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"Brief:\n{state['brief']}\n\n"
+                    f"Retrieved Tool Outputs:\n{evidence_blob}\n\n"
+                    "Based ONLY on the Retrieved Tool Outputs above, return your final answer as valid JSON only:\n"
+                    '{"summary":"...","findings":[{"claim":"...","quote":"exact verbatim substring from Retrieved Tool Outputs","document":"filename","chunk_id":"chunk_id"}]}'
+                ),
+            },
+        ]
+        response = _call_openrouter(
+            client,
+            candidate_models,
+            synthesis_messages,
+            tools=None,
+        )
+        final_text = (getattr(response.choices[0].message, "content", None) or "").strip()
         return {
-            "messages": [AIMessage(content=content_text, tool_calls=tool_calls)],
+            "messages": [AIMessage(content=final_text, tool_calls=[])],
         }
 
     def route(state: AgentState) -> str:
@@ -273,7 +337,7 @@ def run_investigation(
             ),
         ],
     }
-    result = compiled.invoke(start, {"recursion_limit": settings.agent_max_steps * 2})
+    result = compiled.invoke(start, {"recursion_limit": max(24, settings.agent_max_steps * 4)})
     messages = result["messages"]
     trace = []
     for message in messages:
